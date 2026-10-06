@@ -1,0 +1,14 @@
+[package]
+name = "voxy-asset-builder"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+veloren-common-assets = { path = "../../voxy/common/assets", features = ["picasso-assets"] }
+
+[[bin]]
+name = "voxy-assets"
+path = "src/main.rs"

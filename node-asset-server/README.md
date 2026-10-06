@@ -6,6 +6,9 @@ It never watches or rereads that image. Restart the process after replacing it.
 The executable is standalone; its build shares Picasso and protocol code with
 the Voxy client. Raw `.redb` and LZ4-packed images are both accepted.
 
+Rebuild the images from the asset repository using `./build-assets.sh`; see
+[the builder workflow](../asset-builder/README.md). Restart this node afterward.
+
 ```sh
 cd /home/t4ce/Repos/voxy-assets/node-asset-server
 cargo +nightly-2026-07-10 build --release
