@@ -3,6 +3,9 @@
 use picasso::Picasso;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+#[cfg(not(target_os = "trueos"))]
+pub mod server;
+
 use std::{
     collections::BTreeSet,
     io::{self, Read, Write},
@@ -36,10 +39,18 @@ pub fn lz4_encoder<W: Write>(output: W) -> lz4_flex::frame::FrameEncoder<W> {
 pub fn decode_image(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
     if bytes.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
         let mut image = Vec::new();
-        lz4_flex::frame::FrameDecoder::new(bytes.as_slice()).take(MAX_IMAGE as u64 + 1).read_to_end(&mut image)?;
-        if image.len() > MAX_IMAGE { return Err(invalid("database exceeds limit")); }
+        lz4_flex::frame::FrameDecoder::new(bytes.as_slice())
+            .take(MAX_IMAGE as u64 + 1)
+            .read_to_end(&mut image)?;
+        if image.len() > MAX_IMAGE {
+            return Err(invalid("database exceeds limit"));
+        }
         Ok(image)
-    } else if bytes.len() > MAX_IMAGE { Err(invalid("database exceeds limit")) } else { Ok(bytes) }
+    } else if bytes.len() > MAX_IMAGE {
+        Err(invalid("database exceeds limit"))
+    } else {
+        Ok(bytes)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -403,40 +414,81 @@ mod tests {
 
     fn database(entries: &[(&str, &[u8])]) -> AssetDb {
         let store = Picasso::new().unwrap();
-        store.put_embedded_asset("common.canary/canary", b"VELOREN_CANARY_MAGIC").unwrap();
+        store
+            .put_embedded_asset("common.canary/canary", b"VELOREN_CANARY_MAGIC")
+            .unwrap();
         let mut files = vec!["common.canary/canary".to_owned()];
         let mut bytes = b"VELOREN_CANARY_MAGIC".len();
         let mut root = Vec::new();
         for (key, value) in entries {
             store.put_embedded_asset(key, value).unwrap();
-            files.push((*key).to_owned()); bytes += value.len();
+            files.push((*key).to_owned());
+            bytes += value.len();
             let (id, ext) = key.split_once('/').unwrap();
             root.push(format!("File({id:?},{ext:?})"));
         }
         files.sort();
-        let catalog = format!("(version:1,directories:{{\"\":[Directory(\"common\"),{}],\"common\":[File(\"common.canary\",\"canary\")]}},files:{files:?},bytes:{bytes})", root.join(","));
-        store.put_embedded_asset(CATALOG, catalog.as_bytes()).unwrap();
+        let catalog = format!(
+            "(version:1,directories:{{\"\":[Directory(\"common\"),{}],\"common\":[File(\"common.canary\",\"canary\")]}},files:{files:?},bytes:{bytes})",
+            root.join(",")
+        );
+        store
+            .put_embedded_asset(CATALOG, catalog.as_bytes())
+            .unwrap();
         AssetDb::from_store(store, &mut |_| Ok(())).unwrap()
     }
 
     #[test]
     fn delta_removes_replaces_adds_and_preserves_unchanged_bytes() {
-        let old = database(&[("gone/bin", &[7; 180_000]), ("change/bin", b"old"), ("keep/bin", b"same")]);
+        let old = database(&[
+            ("gone/bin", &[7; 180_000]),
+            ("change/bin", b"old"),
+            ("keep/bin", b"same"),
+        ]);
         let serving = AssetDb::open(old.into_image().unwrap()).unwrap();
-        let target = database(&[("change/bin", b"new"), ("empty/bin", b""), ("keep/bin", b"same"), ("large/bin", &[8; 180_000])]);
-        let mut local = AssetDb::from_store(serving.store.fork_runtime_database().unwrap(), &mut |_| Ok(())).unwrap();
+        let target = database(&[
+            ("change/bin", b"new"),
+            ("empty/bin", b""),
+            ("keep/bin", b"same"),
+            ("large/bin", &[8; 180_000]),
+        ]);
+        let mut local =
+            AssetDb::from_store(serving.store.fork_runtime_database().unwrap(), &mut |_| {
+                Ok(())
+            })
+            .unwrap();
         let index = Index::decode(&target.index.encode().unwrap()).unwrap();
         let diff = local.prune_and_diff(&index, &mut |_| Ok(())).unwrap();
         assert!(local.store.embedded_asset("gone/bin").unwrap().is_none());
         assert!(serving.store.embedded_asset("gone/bin").unwrap().is_some());
-        assert!(!diff.iter().any(|i| index.files[*i as usize].key == "keep/bin"));
-        let mut bundle = Vec::new(); target.write_bundle(&diff, &mut bundle).unwrap();
-        local.apply_bundle(&index, &diff, &bundle, &mut |_| Ok(())).unwrap();
+        assert!(
+            !diff
+                .iter()
+                .any(|i| index.files[*i as usize].key == "keep/bin")
+        );
+        let mut bundle = Vec::new();
+        target.write_bundle(&diff, &mut bundle).unwrap();
+        local
+            .apply_bundle(&index, &diff, &bundle, &mut |_| Ok(()))
+            .unwrap();
         let reopened = AssetDb::open(local.into_image().unwrap()).unwrap();
         assert_eq!(reopened.index, target.index);
-        assert_eq!(reopened.store.embedded_asset("change/bin").unwrap().unwrap(), b"new");
-        assert_eq!(reopened.store.embedded_asset("empty/bin").unwrap().unwrap(), b"");
-        assert_eq!(serving.store.embedded_asset("change/bin").unwrap().unwrap(), b"old");
+        assert_eq!(
+            reopened
+                .store
+                .embedded_asset("change/bin")
+                .unwrap()
+                .unwrap(),
+            b"new"
+        );
+        assert_eq!(
+            reopened.store.embedded_asset("empty/bin").unwrap().unwrap(),
+            b""
+        );
+        assert_eq!(
+            serving.store.embedded_asset("change/bin").unwrap().unwrap(),
+            b"old"
+        );
     }
 
     #[test]
@@ -444,30 +496,69 @@ mod tests {
         let a = database(&[("a/bin", b"a"), ("b/bin", b"b")]);
         let b = database(&[("b/bin", b"b"), ("a/bin", b"a")]);
         // Catalog byte ordering is content too; compare noncatalog files here.
-        let a = Index::new(a.index.files.into_iter().filter(|f| f.key != CATALOG).collect()).unwrap();
-        let b = Index::new(b.index.files.into_iter().filter(|f| f.key != CATALOG).collect()).unwrap();
+        let a = Index::new(
+            a.index
+                .files
+                .into_iter()
+                .filter(|f| f.key != CATALOG)
+                .collect(),
+        )
+        .unwrap();
+        let b = Index::new(
+            b.index
+                .files
+                .into_iter()
+                .filter(|f| f.key != CATALOG)
+                .collect(),
+        )
+        .unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn rejects_corrupt_indexes_duplicate_requests_and_truncated_streams() {
         let db = database(&[("a/bin", b"a")]);
-        let mut index = db.index.encode().unwrap(); index[0] ^= 1;
+        let mut index = db.index.encode().unwrap();
+        index[0] ^= 1;
         assert!(Index::decode(&index).is_err());
         assert!(db.write_bundle(&[0, 0], Vec::new()).is_err());
         assert!(db.write_bundle(&[u32::MAX], Vec::new()).is_err());
-        let mut working = AssetDb::from_store(db.store.fork_runtime_database().unwrap(), &mut |_| Ok(())).unwrap();
-        let diff = vec![0]; let mut zip = Vec::new(); db.write_bundle(&diff, &mut zip).unwrap(); zip.truncate(zip.len() / 2);
-        assert!(working.apply_bundle(&db.index, &diff, &zip, &mut |_| Ok(())).is_err());
-        let mut empty = Vec::new(); db.write_bundle(&[], &mut empty).unwrap();
-        working.apply_bundle(&db.index, &[], &empty, &mut |_| Ok(())).unwrap();
+        let mut working =
+            AssetDb::from_store(db.store.fork_runtime_database().unwrap(), &mut |_| Ok(()))
+                .unwrap();
+        let diff = vec![0];
+        let mut zip = Vec::new();
+        db.write_bundle(&diff, &mut zip).unwrap();
+        zip.truncate(zip.len() / 2);
+        assert!(
+            working
+                .apply_bundle(&db.index, &diff, &zip, &mut |_| Ok(()))
+                .is_err()
+        );
+        let mut empty = Vec::new();
+        db.write_bundle(&[], &mut empty).unwrap();
+        working
+            .apply_bundle(&db.index, &[], &empty, &mut |_| Ok(()))
+            .unwrap();
     }
 
     #[test]
     fn cancellation_while_pruning_leaves_the_original_intact() {
-        let old = database(&[("gone/bin", b"gone")]); let target = database(&[]);
-        let mut fork = AssetDb::from_store(old.store.fork_runtime_database().unwrap(), &mut |_| Ok(())).unwrap();
-        assert!(fork.prune_and_diff(&target.index, &mut |_| Err(io::Error::new(io::ErrorKind::Interrupted, "canceled"))).is_err());
-        assert_eq!(old.store.embedded_asset("gone/bin").unwrap().unwrap(), b"gone");
+        let old = database(&[("gone/bin", b"gone")]);
+        let target = database(&[]);
+        let mut fork =
+            AssetDb::from_store(old.store.fork_runtime_database().unwrap(), &mut |_| Ok(()))
+                .unwrap();
+        assert!(
+            fork.prune_and_diff(&target.index, &mut |_| Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "canceled"
+            )))
+            .is_err()
+        );
+        assert_eq!(
+            old.store.embedded_asset("gone/bin").unwrap().unwrap(),
+            b"gone"
+        );
     }
 }
