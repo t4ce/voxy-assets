@@ -1,0 +1,7 @@
+# Build output and node tooling
+node/
+target/
+
+# Generated asset databases (too large for GitHub)
+/voxygen-assets.redb
+/voxygen-assets.redb.lz4
