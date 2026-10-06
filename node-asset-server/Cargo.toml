@@ -1,0 +1,26 @@
+[package]
+name = "voxy-asset-sync"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+lz4_flex = "=0.11.6"
+sha2 = "0.10.9"
+serde = { version = "1", features = ["derive"] }
+ron = { version = "0.12", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "trueos")'.dependencies]
+picasso = { package = "trueos-picasso", path = "../../TRUEOS-Picasso", default-features = false, features = ["runtime-assets"] }
+
+[target.'cfg(not(target_os = "trueos"))'.dependencies]
+picasso = { package = "trueos-picasso", path = "../../TRUEOS-Picasso", default-features = false, features = ["runtime-assets", "test-std"] }
+
+[[bin]]
+name = "node-asset-server"
+path = "src/main.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("trueos"))'] }
